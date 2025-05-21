@@ -9,6 +9,7 @@ type ScanOptions struct {
 	VariableKeywords    []string
 	ContentKeywords     []string
 	PlaceholderPatterns []string
+	ScanConfigs         bool // New flag: whether to scan config files (JSON, YAML, TOML, .env)
 
 	// Compiled regexes for efficiency, initialized by CompileMatchers
 	compiledVarKeywords  *regexp.Regexp

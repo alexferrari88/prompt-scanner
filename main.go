@@ -23,6 +23,7 @@ func main() {
 	jsonOutput := flag.Bool("json", false, "Output results in JSON format.")
 	noFilepath := flag.Bool("no-filepath", false, "Omit the filepath from the default text output.")
 	noLinenumber := flag.Bool("no-linenumber", false, "Omit the line number from the default text output.")
+	scanConfigs := flag.Bool("scan-configs", false, "Also scan common config files (JSON, YAML, TOML, .env). Off by default.") // New flag
 	minLength := flag.Int("min-len", 30, "Minimum character length for a string to be considered a potential prompt.")
 	varKeywordsStr := flag.String("var-keywords", "prompt,template,system_message,user_message,instruction,persona,query,question,task_description,context_str", "Comma-separated keywords for variable or key names.")
 	contentKeywordsStr := flag.String("content-keywords", "you are a,your task is to,translate the,summarize the,given the,answer the following question,extract entities from,generate code for,what is the,explain the,act as a,respond with,based on the provided text", "Comma-separated keywords to search for within string content.")
@@ -45,6 +46,7 @@ func main() {
 		VariableKeywords:    splitAndTrim(*varKeywordsStr),
 		ContentKeywords:     splitAndTrim(*contentKeywordsStr),
 		PlaceholderPatterns: splitAndTrim(*placeholderPatternsStr),
+		ScanConfigs:         *scanConfigs, // Pass the new flag
 	}
 
 	s, err := scanner.New(scanOpts)
@@ -53,9 +55,9 @@ func main() {
 	}
 
 	var foundPrompts []scanner.FoundPrompt
-	scanPath := targetInput // This will be the actual path scanned (local or temp cloned repo)
+	scanPath := targetInput
 	isTempDir := false
-	originalTargetForDisplay := targetInput // Used for display if it's a URL
+	originalTargetForDisplay := targetInput
 
 	if looksLikeGitHubURL(targetInput) {
 		log.Printf("GitHub URL detected: %s", targetInput)
@@ -78,7 +80,7 @@ func main() {
 			log.Fatalf("Error resolving absolute path for '%s': %v", targetInput, errPath)
 		}
 		scanPath = absTarget
-		originalTargetForDisplay = scanPath // Use the absolute path for local display
+		originalTargetForDisplay = scanPath
 		fileInfo, errStat := os.Stat(scanPath)
 		if errStat != nil {
 			log.Fatalf("Error accessing target path '%s': %v", scanPath, errStat)
@@ -126,11 +128,11 @@ func looksLikeGitHubURL(target string) bool {
 	}
 	parsedURL, err := url.ParseRequestURI(target)
 	if err != nil {
-		return false // Not a valid URI
+		return false
 	}
 	return (parsedURL.Scheme == "http" || parsedURL.Scheme == "https") &&
 		(strings.HasSuffix(parsedURL.Host, "github.com")) &&
-		(strings.HasSuffix(parsedURL.Path, ".git") || !strings.Contains(parsedURL.Path, ".")) // Basic check for repo path vs file path
+		(strings.HasSuffix(parsedURL.Path, ".git") || !strings.Contains(parsedURL.Path, "."))
 }
 
 func outputJSON(prompts []scanner.FoundPrompt, scanRoot string, isTempScan bool, originalTarget string) {
@@ -140,14 +142,9 @@ func outputJSON(prompts []scanner.FoundPrompt, scanRoot string, isTempScan bool,
 		if isTempScan {
 			relPath, err := filepath.Rel(scanRoot, p.Filepath)
 			if err == nil {
-				// For GitHub URLs, make the path relative to the repo root.
-				// The originalTarget might be the URL itself, or we could try to derive repo name.
-				// For simplicity, using relPath directly under the assumption scanRoot is the repo root.
 				displayFilepath = relPath
 			}
 		} else {
-			// For local paths, make them relative to the scanned path if it was a directory.
-			// If originalTarget was a file, displayFilepath is already correct.
 			info, _ := os.Stat(originalTarget)
 			if info != nil && info.IsDir() {
 				relPath, err := filepath.Rel(originalTarget, p.Filepath)
@@ -202,17 +199,14 @@ func outputText(prompts []scanner.FoundPrompt, noFilepath, noLinenumber bool, sc
 			fullPrefixWithTab = prefix + "\t"
 		}
 
-		// Normalize newlines for splitting and then print with OS-specific newlines
 		normalizedContent := strings.ReplaceAll(p.Content, "\r\n", "\n")
 		lines := strings.Split(strings.TrimRight(normalizedContent, "\n"), "\n")
 
 		if len(lines) > 0 {
-			fmt.Printf("%s%s%s", fullPrefixWithTab, lines[0], "\n") // Use explicit newline for consistency
+			fmt.Printf("%s%s%s", fullPrefixWithTab, lines[0], "\n")
 
 			indentation := ""
 			if fullPrefixWithTab != "" {
-				// Calculate indentation based on the visual length of the prefix.
-				// This is a simplification; true visual length can be complex with non-ASCII.
 				indentation = strings.Repeat(" ", len(prefix)) + "\t"
 			}
 
@@ -221,8 +215,6 @@ func outputText(prompts []scanner.FoundPrompt, noFilepath, noLinenumber bool, sc
 			}
 		} else if p.Content == "" && fullPrefixWithTab != "" {
 			fmt.Printf("%s%s", fullPrefixWithTab, "\n")
-		} else if p.Content == "" && fullPrefixWithTab == "" {
-			// Don't print anything for a completely empty prompt with no location info
 		}
 	}
 }
