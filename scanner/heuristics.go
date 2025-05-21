@@ -14,19 +14,23 @@ var (
 		"debug": true, "fatal": true, "trace": true, "print": true, "println": true,
 		"printf": true, "exception": true, "verbose": true, "notice": true,
 		"critical": true, "alert": true, "emerg": true, "emergency": true,
-		// Specific ones that might not be caught by simple method name
-		"write": true, // sometimes used for logging, e.g. process.stdout.write
+		"write": true,
 	}
 	// Common logger object/receiver names or prefixes (case-insensitive)
-	// These are harder to rely on solely but can add weight.
 	loggingReceiverNames = map[string]bool{
 		"log": true, "logger": true, "logging": true, "console": true, "fmt": true,
 		"logrus": true, "zap": true, "zerolog": true, "tracer": true, "stderr": true, "stdout": true,
-		"process": true, "window": true, "self": true, // common global-ish objects
+		"process": true, "window": true, "self": true,
 	}
+	// Keywords that, if a string starts with them, make it likely a log/error message (case-insensitive)
+	logMessagePrefixes = []string{
+		"error:", "error ", "warning:", "warning ", "info:", "info ", "debug:", "debug ",
+		"failed to", "unable to", "could not", "exception:", "uncaught", "unhandled",
+		"trace:", "notice:", "critical:", "alert:", "emerg:", "emergency:",
+	}
+	compiledLogMessagePrefixes []*regexp.Regexp
 )
 
-// compileMatchers (no change from previous version, ensure it's called)
 func (so *ScanOptions) compileMatchers() error {
 	if len(so.VariableKeywords) > 0 {
 		pattern := `(?i)\b(` + strings.Join(so.VariableKeywords, "|") + `)\b`
@@ -55,38 +59,70 @@ func (so *ScanOptions) compileMatchers() error {
 		}
 		so.compiledPlaceholders = append(so.compiledPlaceholders, re)
 	}
+
+	// Compile log message prefixes
+	compiledLogMessagePrefixes = make([]*regexp.Regexp, 0, len(logMessagePrefixes))
+	for _, prefix := range logMessagePrefixes {
+		re, err := regexp.Compile(`(?i)^\s*` + regexp.QuoteMeta(prefix))
+		if err != nil {
+			return fmt.Errorf("compiling log message prefix '%s': %w", prefix, err)
+		}
+		compiledLogMessagePrefixes = append(compiledLogMessagePrefixes, re)
+	}
 	return nil
 }
 
-// IsPotentialPrompt applies heuristics to determine if a string is a potential prompt.
 func (s *Scanner) IsPotentialPrompt(ctx PromptContext, fp *FoundPrompt) bool {
-	text := ctx.Text
-	if strings.TrimSpace(text) == "" {
+	text := strings.TrimSpace(ctx.Text)
+	if text == "" {
 		return false
 	}
 
-	// **NEW: Check if the string is an argument to a common logging function**
+	for _, re := range compiledLogMessagePrefixes {
+		if re.MatchString(text) {
+			placeholderFound := false
+			for _, pRe := range s.Options.compiledPlaceholders {
+				if pRe.MatchString(text) {
+					placeholderFound = true
+					break
+				}
+			}
+			if len(text) < 150 && !placeholderFound {
+				return false
+			}
+		}
+	}
+
 	lowerFuncName := strings.ToLower(ctx.InvocationFunctionName)
 	lowerReceiverName := strings.ToLower(ctx.InvocationReceiverName)
 
 	if lowerFuncName != "" {
-		if loggingMethodNames[lowerFuncName] {
-			// If the method name itself is a strong logging indicator (like .log, .error, .print)
-			// then it's very likely a log message.
-			// We can be more aggressive in filtering these.
-			// Exception: if the text is extremely long and has template vars, it might still be a prompt used for logging.
-			if len(text) < 200 && !strings.Contains(text, "{") && !strings.Contains(text, "%") { // Heuristic length/template check
-				return false // Likely a log message, not a prompt
+		if (lowerFuncName == "error" && (lowerReceiverName == "" || lowerReceiverName == "new")) ||
+			lowerFuncName == "throw" || // Added for JS 'throw "string"' which might be captured by parent type
+			(lowerReceiverName == "" && lowerFuncName == "throw_literal") { // Special marker for throw "literal"
+			if len(text) < 150 && !strings.Contains(text, "{") {
+				return false
 			}
 		}
-		// If receiver is a known logger, and method is generic like 'write'
-		if loggingReceiverNames[lowerReceiverName] && (lowerFuncName == "write" || lowerFuncName == "send" || lowerFuncName == "put") {
+
+		if loggingMethodNames[lowerFuncName] {
+			placeholderFound := false
+			for _, pRe := range s.Options.compiledPlaceholders {
+				if pRe.MatchString(text) {
+					placeholderFound = true
+					break
+				}
+			}
+			if len(text) < 200 && !placeholderFound {
+				return false
+			}
+		}
+		if loggingReceiverNames[lowerReceiverName] && (loggingMethodNames[lowerFuncName] || lowerFuncName == "write") {
 			if len(text) < 100 && !strings.Contains(text, "{") {
 				return false
 			}
 		}
 	}
-	// End of new logging check section
 
 	score := 0
 	if ctx.VariableName != "" && s.Options.compiledVarKeywords != nil {
@@ -96,7 +132,6 @@ func (s *Scanner) IsPotentialPrompt(ctx PromptContext, fp *FoundPrompt) bool {
 			score += 3
 		}
 	}
-
 	if s.Options.compiledContentWords != nil {
 		match := s.Options.compiledContentWords.FindString(text)
 		if match != "" {
@@ -104,7 +139,6 @@ func (s *Scanner) IsPotentialPrompt(ctx PromptContext, fp *FoundPrompt) bool {
 			score += 2
 		}
 	}
-
 	for _, re := range s.Options.compiledPlaceholders {
 		match := re.FindString(text)
 		if match != "" {
