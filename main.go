@@ -28,6 +28,7 @@ func main() {
 	varKeywordsStr := flag.String("var-keywords", "prompt,template,system_message,user_message,instruction,persona,query,question,task_description,context_str", "Comma-separated keywords for variable or key names.")
 	contentKeywordsStr := flag.String("content-keywords", "you are a,you are an,you are the,act as,from the following,from this,your task is to,you need to,break down,translate the,summarize the,given the,answer the following question,extract entities from,generate code for,what is the,explain the,act as a,respond with,based on the provided text,here's,here is,here are,consider this,consider the following,analyze this,analyze the following", "Comma-separated keywords to search for within string content.")
 	placeholderPatternsStr := flag.String("placeholder-patterns", `\{[^{}]*?\}|\{\{[^{}]*?\}\}|<[^<>]*?>|\$[A-Z_][A-Z0-9_]*|\%[sdfeuxg]|\[[A-Z_]+\]`, "Comma-separated regex patterns to identify templating placeholders.")
+	greedy := flag.Bool("greedy", false, "Use aggressive (current) heuristics if true. If false, use stricter rules based on content keywords and multi-line criteria.")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "LLM Prompt Scanner\nRecursively scans codebases for potential LLM prompts.\n\nUsage:\n  %s [options] <target_path_or_github_url>\n\nOptions:\n", filepath.Base(os.Args[0]))
@@ -47,6 +48,7 @@ func main() {
 		ContentKeywords:     splitAndTrim(*contentKeywordsStr),
 		PlaceholderPatterns: splitAndTrim(*placeholderPatternsStr),
 		ScanConfigs:         *scanConfigs, // Pass the new flag
+		Greedy:              *greedy,
 	}
 
 	s, err := scanner.New(scanOpts)

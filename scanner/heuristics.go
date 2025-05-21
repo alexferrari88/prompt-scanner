@@ -78,113 +78,140 @@ func (s *Scanner) IsPotentialPrompt(ctx PromptContext, fp *FoundPrompt) bool {
 		return false
 	}
 
-	for _, re := range compiledLogMessagePrefixes {
-		if re.MatchString(text) {
-			placeholderFound := false
-			for _, pRe := range s.Options.compiledPlaceholders {
-				if pRe.MatchString(text) {
-					placeholderFound = true
-					break
+	// New logic for the 'greedy' flag
+	if !s.Options.Greedy {
+		lowerText := strings.ToLower(text)
+		isMultiLine := ctx.IsMultiLineExplicit || ctx.LinesInContent > 1
+
+		// Condition 1: String starts with a content keyword
+		for _, keyword := range s.Options.ContentKeywords {
+			if strings.HasPrefix(lowerText, strings.ToLower(keyword)) {
+				fp.MatchedContentWord = keyword // Record the keyword that matched
+				return true
+			}
+		}
+
+		// Condition 2: String contains a content keyword AND is multi-line
+		if isMultiLine {
+			for _, keyword := range s.Options.ContentKeywords {
+				if strings.Contains(lowerText, strings.ToLower(keyword)) {
+					fp.MatchedContentWord = keyword // Record the keyword that matched
+					return true
 				}
 			}
-			if len(text) < 150 && !placeholderFound {
-				return false
-			}
 		}
-	}
-
-	lowerFuncName := strings.ToLower(ctx.InvocationFunctionName)
-	lowerReceiverName := strings.ToLower(ctx.InvocationReceiverName)
-
-	if lowerFuncName != "" {
-		if (lowerFuncName == "error" && (lowerReceiverName == "" || lowerReceiverName == "new")) ||
-			lowerFuncName == "throw" || // Added for JS 'throw "string"' which might be captured by parent type
-			(lowerReceiverName == "" && lowerFuncName == "throw_literal") { // Special marker for throw "literal"
-			if len(text) < 150 && !strings.Contains(text, "{") {
-				return false
-			}
-		}
-
-		if loggingMethodNames[lowerFuncName] {
-			placeholderFound := false
-			for _, pRe := range s.Options.compiledPlaceholders {
-				if pRe.MatchString(text) {
-					placeholderFound = true
-					break
+		// If neither of the greedy=false conditions are met, it's not a prompt under this mode.
+		return false
+	} else {
+		// Original heuristic logic (when greedy is true)
+		for _, re := range compiledLogMessagePrefixes {
+			if re.MatchString(text) {
+				placeholderFound := false
+				for _, pRe := range s.Options.compiledPlaceholders {
+					if pRe.MatchString(text) {
+						placeholderFound = true
+						break
+					}
+				}
+				if len(text) < 150 && !placeholderFound {
+					return false
 				}
 			}
-			if len(text) < 200 && !placeholderFound {
-				return false
+		}
+
+		lowerFuncName := strings.ToLower(ctx.InvocationFunctionName)
+		lowerReceiverName := strings.ToLower(ctx.InvocationReceiverName)
+
+		if lowerFuncName != "" {
+			if (lowerFuncName == "error" && (lowerReceiverName == "" || lowerReceiverName == "new")) ||
+				lowerFuncName == "throw" || // Added for JS 'throw "string"' which might be captured by parent type
+				(lowerReceiverName == "" && lowerFuncName == "throw_literal") { // Special marker for throw "literal"
+				if len(text) < 150 && !strings.Contains(text, "{") {
+					return false
+				}
+			}
+
+			if loggingMethodNames[lowerFuncName] {
+				placeholderFound := false
+				for _, pRe := range s.Options.compiledPlaceholders {
+					if pRe.MatchString(text) {
+						placeholderFound = true
+						break
+					}
+				}
+				if len(text) < 200 && !placeholderFound {
+					return false
+				}
+			}
+			if loggingReceiverNames[lowerReceiverName] && (loggingMethodNames[lowerFuncName] || lowerFuncName == "write") {
+				if len(text) < 100 && !strings.Contains(text, "{") {
+					return false
+				}
 			}
 		}
-		if loggingReceiverNames[lowerReceiverName] && (loggingMethodNames[lowerFuncName] || lowerFuncName == "write") {
-			if len(text) < 100 && !strings.Contains(text, "{") {
-				return false
+
+		score := 0
+		if ctx.VariableName != "" && s.Options.compiledVarKeywords != nil {
+			match := s.Options.compiledVarKeywords.FindString(ctx.VariableName)
+			if match != "" {
+				fp.MatchedVariableName = match
+				score += 3
 			}
 		}
-	}
-
-	score := 0
-	if ctx.VariableName != "" && s.Options.compiledVarKeywords != nil {
-		match := s.Options.compiledVarKeywords.FindString(ctx.VariableName)
-		if match != "" {
-			fp.MatchedVariableName = match
-			score += 3
+		if s.Options.compiledContentWords != nil {
+			match := s.Options.compiledContentWords.FindString(text)
+			if match != "" {
+				fp.MatchedContentWord = match
+				score += 2
+			}
 		}
-	}
-	if s.Options.compiledContentWords != nil {
-		match := s.Options.compiledContentWords.FindString(text)
-		if match != "" {
-			fp.MatchedContentWord = match
-			score += 2
+		for _, re := range s.Options.compiledPlaceholders {
+			match := re.FindString(text)
+			if match != "" {
+				fp.MatchedPlaceholder = match
+				score += 2
+				break
+			}
 		}
-	}
-	for _, re := range s.Options.compiledPlaceholders {
-		match := re.FindString(text)
-		if match != "" {
-			fp.MatchedPlaceholder = match
-			score += 2
-			break
+
+		isLongEnough := len(text) >= s.Options.MinLength
+		isMultiLine := ctx.IsMultiLineExplicit || ctx.LinesInContent > 1
+
+		if isMultiLine {
+			score += 1
 		}
-	}
+		if isLongEnough {
+			score += 1
+		}
 
-	isLongEnough := len(text) >= s.Options.MinLength
-	isMultiLine := ctx.IsMultiLineExplicit || ctx.LinesInContent > 1
-
-	if isMultiLine {
-		score += 1
-	}
-	if isLongEnough {
-		score += 1
-	}
-
-	if fp.MatchedVariableName != "" && (isLongEnough || isMultiLine || fp.MatchedContentWord != "" || fp.MatchedPlaceholder != "") {
-		return true
-	}
-	if fp.MatchedContentWord != "" && (isLongEnough || isMultiLine || fp.MatchedPlaceholder != "") {
-		return true
-	}
-	if fp.MatchedPlaceholder != "" && (isLongEnough || isMultiLine) {
-		return true
-	}
-	if isMultiLine && isLongEnough && score >= 1 {
-		return true
-	}
-	if isLongEnough && (fp.MatchedContentWord != "" || fp.MatchedPlaceholder != "") {
-		return true
-	}
-	if score >= 2 && isLongEnough {
-		return true
-	}
-	if score >= 3 {
-		return true
-	}
-
-	if len(text) > s.Options.MinLength*3 && (isMultiLine || strings.ContainsAny(text, ".?!:")) {
-		if score < 2 {
-			fp.MatchedContentWord = "long_string"
+		if fp.MatchedVariableName != "" && (isLongEnough || isMultiLine || fp.MatchedContentWord != "" || fp.MatchedPlaceholder != "") {
 			return true
 		}
-	}
-	return false
+		if fp.MatchedContentWord != "" && (isLongEnough || isMultiLine || fp.MatchedPlaceholder != "") {
+			return true
+		}
+		if fp.MatchedPlaceholder != "" && (isLongEnough || isMultiLine) {
+			return true
+		}
+		if isMultiLine && isLongEnough && score >= 1 {
+			return true
+		}
+		if isLongEnough && (fp.MatchedContentWord != "" || fp.MatchedPlaceholder != "") {
+			return true
+		}
+		if score >= 2 && isLongEnough {
+			return true
+		}
+		if score >= 3 {
+			return true
+		}
+
+		if len(text) > s.Options.MinLength*3 && (isMultiLine || strings.ContainsAny(text, ".?!:")) {
+			if score < 2 {
+				fp.MatchedContentWord = "long_string"
+				return true
+			}
+		}
+		return false
+	} // End of else (greedy == true)
 }
