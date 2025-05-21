@@ -26,7 +26,7 @@ func main() {
 	scanConfigs := flag.Bool("scan-configs", false, "Also scan common config files (JSON, YAML, TOML, .env). Off by default.") // New flag
 	minLength := flag.Int("min-len", 30, "Minimum character length for a string to be considered a potential prompt.")
 	varKeywordsStr := flag.String("var-keywords", "prompt,template,system_message,user_message,instruction,persona,query,question,task_description,context_str", "Comma-separated keywords for variable or key names.")
-	contentKeywordsStr := flag.String("content-keywords", "you are a,your task is to,translate the,summarize the,given the,answer the following question,extract entities from,generate code for,what is the,explain the,act as a,respond with,based on the provided text", "Comma-separated keywords to search for within string content.")
+	contentKeywordsStr := flag.String("content-keywords", "you are a,you are the,act as,from the following,from this,your task is to,translate the,summarize the,given the,answer the following question,extract entities from,generate code for,what is the,explain the,act as a,respond with,based on the provided text,consider this,consider the following,analyze this,analyze the following", "Comma-separated keywords to search for within string content.")
 	placeholderPatternsStr := flag.String("placeholder-patterns", `\{[^{}]*?\}|\{\{[^{}]*?\}\}|<[^<>]*?>|\$[A-Z_][A-Z0-9_]*|\%[sdfeuxg]|\[[A-Z_]+\]`, "Comma-separated regex patterns to identify templating placeholders.")
 
 	flag.Usage = func() {
