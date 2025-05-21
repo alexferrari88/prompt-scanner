@@ -9,9 +9,8 @@ type ScanOptions struct {
 	VariableKeywords    []string
 	ContentKeywords     []string
 	PlaceholderPatterns []string
-	ScanConfigs         bool // New flag: whether to scan config files (JSON, YAML, TOML, .env)
+	ScanConfigs         bool
 
-	// Compiled regexes for efficiency, initialized by CompileMatchers
 	compiledVarKeywords  *regexp.Regexp
 	compiledContentWords *regexp.Regexp
 	compiledPlaceholders []*regexp.Regexp
@@ -20,14 +19,13 @@ type ScanOptions struct {
 // FoundPrompt represents a potential LLM prompt found in a file.
 type FoundPrompt struct {
 	Filepath string `json:"filepath"`
-	Line     int    `json:"line"`    // Starting line number of the prompt
-	Content  string `json:"content"` // The actual prompt text
+	Line     int    `json:"line"`
+	Content  string `json:"content"`
 
-	// Internal fields, not for direct JSON output unless transformed
-	MatchedVariableName string // If found via variable assignment
-	MatchedContentWord  string // If found via content keyword
-	MatchedPlaceholder  string // If found via placeholder
-	IsMultiLine         bool   // Was the original string multi-line (approximated)
+	MatchedVariableName string
+	MatchedContentWord  string
+	MatchedPlaceholder  string
+	IsMultiLine         bool
 }
 
 // JSONOutput is the structure for the --json flag output
@@ -39,9 +37,11 @@ type JSONOutput struct {
 
 // PromptContext provides context to the heuristic checker.
 type PromptContext struct {
-	Text                string // The string content itself
-	VariableName        string // Variable or key name, if applicable
-	IsMultiLineExplicit bool   // If the original string literal was explicitly a multi-line type (e.g., Python """str""", JS `str`)
-	LinesInContent      int    // Number of lines in the *extracted* string content
-	FileExtension       string // e.g., ".py", ".go"
+	Text                   string // The string content itself
+	VariableName           string // Variable or key name, if applicable
+	IsMultiLineExplicit    bool
+	LinesInContent         int
+	FileExtension          string
+	InvocationFunctionName string // e.g., "log", "info", "print" if string is a direct func arg
+	InvocationReceiverName string // e.g., "console", "logger", "fmt" if string is arg to a method call
 }

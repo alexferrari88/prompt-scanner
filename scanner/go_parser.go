@@ -21,16 +21,16 @@ func (s *Scanner) ParseGoFile(filePath string, contentBytes []byte) ([]FoundProm
 
 	var prompts []FoundPrompt
 	ext := filepath.Ext(filePath)
-	varPath := make([]ast.Node, 0) // Keep track of path to current node
+	varPath := make([]ast.Node, 0)
 
 	ast.Inspect(node, func(n ast.Node) bool {
 		if n == nil {
 			if len(varPath) > 0 {
-				varPath = varPath[:len(varPath)-1] // Pop from path
+				varPath = varPath[:len(varPath)-1]
 			}
 			return true
 		}
-		varPath = append(varPath, n) // Push to path
+		varPath = append(varPath, n)
 
 		basicLit, ok := n.(*ast.BasicLit)
 		if !ok || basicLit.Kind != token.STRING {
@@ -39,69 +39,93 @@ func (s *Scanner) ParseGoFile(filePath string, contentBytes []byte) ([]FoundProm
 
 		val, err := strconv.Unquote(basicLit.Value)
 		if err != nil {
-			// Attempt to handle raw strings that strconv.Unquote might not like if unterminated etc.
 			if basicLit.Value[0] == '`' && basicLit.Value[len(basicLit.Value)-1] == '`' && len(basicLit.Value) >= 2 {
 				val = basicLit.Value[1 : len(basicLit.Value)-1]
 			} else if (basicLit.Value[0] == '"' || basicLit.Value[0] == '\'') && len(basicLit.Value) >= 2 {
-				// Simple trim for malformed regular strings, won't unescape
 				val = basicLit.Value[1 : len(basicLit.Value)-1]
 			} else {
-				val = basicLit.Value // Fallback to raw value if unquoting fails badly
+				val = basicLit.Value
 			}
 		}
 
 		startLine := fset.Position(basicLit.Pos()).Line
 		linesInContent := utils.CountNewlines(val) + 1
-		isMultiLineExplicit := basicLit.Value[0] == '`' // Raw strings `...`
+		isMultiLineExplicit := basicLit.Value[0] == '`'
 
-		var varName string
-		// Traverse up the varPath to find an assignment or declaration
-		for i := len(varPath) - 2; i >= 0; i-- { // Start from parent of BasicLit
+		var varName, invFuncName, invReceiverName string
+
+		// Traverse up the varPath
+		for i := len(varPath) - 2; i >= 0; i-- {
 			parentNode := varPath[i]
+
 			if assignStmt, isAssign := parentNode.(*ast.AssignStmt); isAssign {
-				// Check if basicLit is one of the RHS expressions
 				for idx, rhsExpr := range assignStmt.Rhs {
-					if rhsExpr == basicLit {
+					if rhsExpr == basicLit || (rhsExpr == n && n == basicLit) { // Check if current node is the RHS
 						if len(assignStmt.Lhs) > idx {
 							if ident, isIdent := assignStmt.Lhs[idx].(*ast.Ident); isIdent {
 								varName = ident.Name
-								goto foundVarName // Exit loop once varName is found
+								goto foundContext // Found primary context (assignment)
 							}
 						}
 					}
 				}
-			} else if valueSpec, isValueSpec := parentNode.(*ast.ValueSpec); isValueSpec { // Catches var x = "val" or const x = "val"
+			} else if valueSpec, isValueSpec := parentNode.(*ast.ValueSpec); isValueSpec {
 				for idx, valNode := range valueSpec.Values {
-					if valNode == basicLit {
+					if valNode == basicLit || (valNode == n && n == basicLit) {
 						if len(valueSpec.Names) > idx {
 							varName = valueSpec.Names[idx].Name
-							goto foundVarName // Exit loop
+							goto foundContext // Found primary context (declaration)
 						}
 					}
 				}
-			} else if _, isReturn := parentNode.(*ast.ReturnStmt); isReturn {
-				// String literal is being returned, no direct variable name here
-				// Could mark as "return_value" or similar if desired
-				break // Stop searching up for var name in this case
-			} else if _, isCall := parentNode.(*ast.CallExpr); isCall {
-				// String literal is an argument to a function call
-				break
+			} else if callExpr, isCall := parentNode.(*ast.CallExpr); isCall {
+				// Check if basicLit is one of the arguments
+				isArg := false
+				for _, arg := range callExpr.Args {
+					if arg == basicLit || (arg == n && n == basicLit) {
+						isArg = true
+						break
+					}
+				}
+				if isArg {
+					// It's an argument. Try to get function name.
+					switch fun := callExpr.Fun.(type) {
+					case *ast.Ident: // Direct function call, e.g., Println("...")
+						invFuncName = fun.Name
+					case *ast.SelectorExpr: // Method call, e.g., logger.Info("...") or fmt.Println("...")
+						if xIdent, ok := fun.X.(*ast.Ident); ok {
+							invReceiverName = xIdent.Name
+						}
+						invFuncName = fun.Sel.Name
+					}
+					// If part of a call, we don't consider it an assignment for varName purposes
+					// unless it's also assigned, e.g. x := logger.Info("...") - this is complex to chain.
+					// For now, if it's a direct argument to a call, prioritize call context.
+					if varName == "" { // Only if not already part of an assignment
+						goto foundContext
+					}
+				}
 			}
+			// If we found a varName, don't let a higher-level call overwrite it as primary context
+			// but do record the call if the var is then used in a call. This needs more complex state.
+			// For now, the closest context (assignment or call arg) wins.
 		}
-	foundVarName:
+	foundContext:
 
 		fp := FoundPrompt{
 			Filepath:    filePath,
 			Line:        startLine,
 			Content:     val,
-			IsMultiLine: isMultiLineExplicit || linesInContent > 1, // Fallback to content check
+			IsMultiLine: isMultiLineExplicit || linesInContent > 1,
 		}
 		context := PromptContext{
-			Text:                val,
-			VariableName:        varName,
-			IsMultiLineExplicit: isMultiLineExplicit,
-			LinesInContent:      linesInContent,
-			FileExtension:       ext,
+			Text:                   val,
+			VariableName:           varName,
+			IsMultiLineExplicit:    isMultiLineExplicit,
+			LinesInContent:         linesInContent,
+			FileExtension:          ext,
+			InvocationFunctionName: invFuncName,
+			InvocationReceiverName: invReceiverName,
 		}
 
 		if s.IsPotentialPrompt(context, &fp) {
@@ -109,6 +133,5 @@ func (s *Scanner) ParseGoFile(filePath string, contentBytes []byte) ([]FoundProm
 		}
 		return true
 	})
-
 	return prompts, nil
 }

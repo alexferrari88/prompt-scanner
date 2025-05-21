@@ -3,10 +3,8 @@ package scanner
 
 import (
 	"context"
-	"fmt" // Keep for debugging if necessary
+	"fmt"
 	"path/filepath"
-
-	// "regexp" // Not used here anymore
 	"strings"
 
 	sitter "github.com/smacker/go-tree-sitter"
@@ -14,7 +12,7 @@ import (
 	"github.com/smacker/go-tree-sitter/python"
 	"github.com/smacker/go-tree-sitter/typescript/typescript"
 
-	"github.com/alexferrari88/prompt-scanner/utils" // Adjust import path
+	"github.com/alexferrari88/prompt-scanner/utils"
 )
 
 var (
@@ -24,8 +22,7 @@ var (
 		"typescript": typescript.GetLanguage(),
 	}
 
-	// Tree-sitter queries targeting string literals and their assignments.
-	// These queries are designed NOT to match comment nodes.
+	// Final attempt at robust JS/TS queries
 	langToQueries = map[string]string{
 		"python": `
 			(string) @string_node
@@ -33,30 +30,41 @@ var (
 				left: (identifier) @var.name
 				right: (string) @string_node)
             (call
-                function: (identifier) @func.name
+                function: [
+					(identifier) @call.function
+					(attribute
+						object: (identifier) @call.receiver
+						attribute: (identifier) @call.function)
+				]
                 arguments: (argument_list (string) @string_node))
 		`,
 		"javascript": `
-			[
-				(string_fragment) ;; for template string parts
-				(string) ;; for regular strings "" ''
-				(template_string) @string_node_ts ;; for full template strings ` + "`" + `...` + "`" + `
-			] @string_node
+			; Basic string literals that are not part of other specific matches below
+			[ (string_fragment) (string) (template_string) ] @string_node
+
+			; Strings in assignments
 			(assignment_expression
 				left: [ (identifier) (member_expression) ] @var.name
 				right: [ (string) (template_string) ] @string_node)
 			(variable_declarator
 				name: (identifier) @var.name
 				value: [ (string) (template_string) ] @string_node)
+
+			; Strings as arguments to direct function calls: func("string")
             (call_expression
-                arguments: (arguments [ (string) (template_string) ] @string_node))
+				function: (identifier) @call.function
+                arguments: (arguments ([ (string) (template_string) ] @string_node)))
+
+			; Strings as arguments to member function calls: obj.method("string")
+			(call_expression
+				function: (member_expression
+					object: (_) @call.receiver ; Capture any node as receiver
+					property: (_) @call.function_prop ; Capture any node as property
+				)
+				arguments: (arguments ([ (string) (template_string) ] @string_node)))
 		`,
-		"typescript": `
-			[
-				(string_fragment)
-				(string)
-				(template_string) @string_node_ts
-			] @string_node
+		"typescript": ` ;; Similar to JavaScript
+			[ (string_fragment) (string) (template_string) ] @string_node
 			(assignment_expression
 				left: [ (identifier) (member_expression) ] @var.name
 				right: [ (string) (template_string) ] @string_node)
@@ -65,12 +73,19 @@ var (
 					name: (identifier) @var.name
 					value: [ (string) (template_string) ] @string_node))
             (call_expression
-                arguments: (arguments [ (string) (template_string) ] @string_node))
+				function: (identifier) @call.function
+                arguments: (arguments ([ (string) (template_string) ] @string_node)))
+			(call_expression
+				function: (member_expression
+					object: (_) @call.receiver
+					property: (_) @call.function_prop
+				)
+				arguments: (arguments ([ (string) (template_string) ] @string_node)))
 		`,
 	}
 )
 
-// unescapePythonString (simplified)
+// unescapePythonString (no change)
 func unescapePythonString(s string) string {
 	s = strings.ReplaceAll(s, "\\n", "\n")
 	s = strings.ReplaceAll(s, "\\t", "\t")
@@ -80,13 +95,13 @@ func unescapePythonString(s string) string {
 	return s
 }
 
-// unescapeJSString (simplified)
+// unescapeJSString (no change)
 func unescapeJSString(s string) string {
 	s = strings.ReplaceAll(s, "\\n", "\n")
 	s = strings.ReplaceAll(s, "\\t", "\t")
 	s = strings.ReplaceAll(s, "\\'", "'")
 	s = strings.ReplaceAll(s, "\\\"", "\"")
-	s = strings.ReplaceAll(s, "\\`", "`") // For template literals
+	s = strings.ReplaceAll(s, "\\`", "`")
 	s = strings.ReplaceAll(s, "\\\\", "\\")
 	return s
 }
@@ -94,24 +109,24 @@ func unescapeJSString(s string) string {
 func (s *Scanner) ParseTreeSitterFile(filePath string, contentBytes []byte, langName string) ([]FoundPrompt, error) {
 	lang, supported := langToGrammar[langName]
 	if !supported {
-		return nil, fmt.Errorf("tree-sitter grammar for language '%s' not supported/loaded", langName)
+		return nil, fmt.Errorf("tree-sitter grammar for '%s' not supported", langName)
 	}
 	queryString, hasQuery := langToQueries[langName]
 	if !hasQuery {
-		return nil, fmt.Errorf("tree-sitter query for language '%s' not defined", langName)
+		return nil, fmt.Errorf("tree-sitter query for '%s' not defined", langName)
 	}
 
 	parser := sitter.NewParser()
 	parser.SetLanguage(lang)
 	tree, err := parser.ParseCtx(context.Background(), nil, contentBytes)
 	if err != nil {
-		return nil, fmt.Errorf("tree-sitter parsing error for %s: %w", filePath, err)
+		return nil, fmt.Errorf("ts parsing error for %s: %w", filePath, err)
 	}
 	defer tree.Close()
 
 	q, err := sitter.NewQuery([]byte(queryString), lang)
 	if err != nil {
-		return nil, fmt.Errorf("tree-sitter query compilation error for %s: %w", langName, err)
+		return nil, fmt.Errorf("ts query compilation error for %s (query: \n%s\nError: %w)", langName, queryString, err)
 	}
 	defer q.Close()
 
@@ -129,30 +144,39 @@ func (s *Scanner) ParseTreeSitterFile(filePath string, contentBytes []byte, lang
 			break
 		}
 
-		varName := ""
+		var varName, currentInvFuncName, currentInvReceiverName string
 		stringNode := (*sitter.Node)(nil)
 
+		// Process captures for the current match `m`
 		for _, capture := range m.Captures {
-			captureName := q.CaptureNameForId(capture.Index)
 			node := capture.Node
-			nodeType := node.Type()
+			captureName := q.CaptureNameForId(capture.Index)
+			nodeTypeStr := node.Type()
 
-			if strings.Contains(nodeType, "comment") { // Explicitly skip comment node types
-				stringNode = nil // Ensure stringNode is not set if a comment was somehow captured
-				break            // Break from inner capture loop for this match
+			if strings.Contains(nodeTypeStr, "comment") {
+				stringNode = nil
+				break
 			}
 
 			switch captureName {
 			case "var.name":
 				varName = node.Content(contentBytes)
-			case "string_node", "string_node_ts":
-				if strings.Contains(nodeType, "string") || nodeType == "template_string" || nodeType == "string_fragment" {
+			case "string_node", "string_node_ts": // string_node_ts was mainly for template_string within choice
+				// Basic string types are now captured by the first pattern or as part of others.
+				// Ensure stringNode is only set if the node is a string type.
+				if strings.Contains(nodeTypeStr, "string") || nodeTypeStr == "template_string" || nodeTypeStr == "string_fragment" {
 					stringNode = node
 				}
+			case "call.function":
+				currentInvFuncName = node.Content(contentBytes)
+			case "call.function_prop":
+				currentInvFuncName = node.Content(contentBytes)
+			case "call.receiver":
+				currentInvReceiverName = node.Content(contentBytes)
 			}
 		}
 
-		if stringNode == nil { // If no valid string node was found for this match (e.g., skipped due to being a comment)
+		if stringNode == nil {
 			continue
 		}
 
@@ -168,25 +192,14 @@ func (s *Scanner) ParseTreeSitterFile(filePath string, contentBytes []byte, lang
 
 		switch langName {
 		case "python":
-			isMultiLineExplicit = strings.Contains(rawStringNodeContent, "\n") // Initial check based on raw content
-
-			// Determine prefix and if it's a raw string
+			isMultiLineExplicit = strings.Contains(rawStringNodeContent, "\n")
 			var prefixLen int
 			isRawString := false
-			// Order matters: check for longest prefixes first
-			if strings.HasPrefix(rawStringNodeContent, "fr\"\"\"") || strings.HasPrefix(rawStringNodeContent, "Fr\"\"\"") ||
-				strings.HasPrefix(rawStringNodeContent, "rf\"\"\"") || strings.HasPrefix(rawStringNodeContent, "Rf\"\"\"") ||
-				strings.HasPrefix(rawStringNodeContent, "fr'''") || strings.HasPrefix(rawStringNodeContent, "Fr'''") ||
-				strings.HasPrefix(rawStringNodeContent, "rf'''") || strings.HasPrefix(rawStringNodeContent, "Rf'''") {
+			if strings.HasPrefix(rawStringNodeContent, "fr\"\"\"") || strings.HasPrefix(rawStringNodeContent, "Fr\"\"\"") || strings.HasPrefix(rawStringNodeContent, "rf\"\"\"") || strings.HasPrefix(rawStringNodeContent, "Rf\"\"\"") || strings.HasPrefix(rawStringNodeContent, "fr'''") || strings.HasPrefix(rawStringNodeContent, "Fr'''") || strings.HasPrefix(rawStringNodeContent, "rf'''") || strings.HasPrefix(rawStringNodeContent, "Rf'''") {
 				prefixLen = 5
 				isRawString = true
 				isMultiLineExplicit = true
-			} else if strings.HasPrefix(rawStringNodeContent, "r\"\"\"") || strings.HasPrefix(rawStringNodeContent, "R\"\"\"") ||
-				strings.HasPrefix(rawStringNodeContent, "f\"\"\"") || strings.HasPrefix(rawStringNodeContent, "F\"\"\"") ||
-				strings.HasPrefix(rawStringNodeContent, "u\"\"\"") || strings.HasPrefix(rawStringNodeContent, "U\"\"\"") ||
-				strings.HasPrefix(rawStringNodeContent, "r'''") || strings.HasPrefix(rawStringNodeContent, "R'''") ||
-				strings.HasPrefix(rawStringNodeContent, "f'''") || strings.HasPrefix(rawStringNodeContent, "F'''") ||
-				strings.HasPrefix(rawStringNodeContent, "u'''") || strings.HasPrefix(rawStringNodeContent, "U'''") {
+			} else if strings.HasPrefix(rawStringNodeContent, "r\"\"\"") || strings.HasPrefix(rawStringNodeContent, "R\"\"\"") || strings.HasPrefix(rawStringNodeContent, "f\"\"\"") || strings.HasPrefix(rawStringNodeContent, "F\"\"\"") || strings.HasPrefix(rawStringNodeContent, "u\"\"\"") || strings.HasPrefix(rawStringNodeContent, "U\"\"\"") || strings.HasPrefix(rawStringNodeContent, "r'''") || strings.HasPrefix(rawStringNodeContent, "R'''") || strings.HasPrefix(rawStringNodeContent, "f'''") || strings.HasPrefix(rawStringNodeContent, "F'''") || strings.HasPrefix(rawStringNodeContent, "u'''") || strings.HasPrefix(rawStringNodeContent, "U'''") {
 				prefixLen = 4
 				isMultiLineExplicit = true
 				if strings.HasPrefix(rawStringNodeContent, "r") || strings.HasPrefix(rawStringNodeContent, "R") {
@@ -195,67 +208,57 @@ func (s *Scanner) ParseTreeSitterFile(filePath string, contentBytes []byte, lang
 			} else if strings.HasPrefix(rawStringNodeContent, "\"\"\"") || strings.HasPrefix(rawStringNodeContent, "'''") {
 				prefixLen = 3
 				isMultiLineExplicit = true
-			} else if strings.HasPrefix(rawStringNodeContent, "fr") || strings.HasPrefix(rawStringNodeContent, "Fr") ||
-				strings.HasPrefix(rawStringNodeContent, "rf") || strings.HasPrefix(rawStringNodeContent, "Rf") {
+			} else if strings.HasPrefix(rawStringNodeContent, "fr") || strings.HasPrefix(rawStringNodeContent, "Fr") || strings.HasPrefix(rawStringNodeContent, "rf") || strings.HasPrefix(rawStringNodeContent, "Rf") {
 				prefixLen = 3
 				isRawString = true
-				isMultiLineExplicit = false // single quoted raw f-string
-			} else if strings.HasPrefix(rawStringNodeContent, "r") || strings.HasPrefix(rawStringNodeContent, "R") ||
-				strings.HasPrefix(rawStringNodeContent, "f") || strings.HasPrefix(rawStringNodeContent, "F") ||
-				strings.HasPrefix(rawStringNodeContent, "u") || strings.HasPrefix(rawStringNodeContent, "U") {
+				isMultiLineExplicit = false
+			} else if strings.HasPrefix(rawStringNodeContent, "r") || strings.HasPrefix(rawStringNodeContent, "R") || strings.HasPrefix(rawStringNodeContent, "f") || strings.HasPrefix(rawStringNodeContent, "F") || strings.HasPrefix(rawStringNodeContent, "u") || strings.HasPrefix(rawStringNodeContent, "U") {
 				prefixLen = 2
-				isMultiLineExplicit = false // single quoted
+				isMultiLineExplicit = false
 				if strings.HasPrefix(rawStringNodeContent, "r") || strings.HasPrefix(rawStringNodeContent, "R") {
 					isRawString = true
 				}
 			} else if strings.HasPrefix(rawStringNodeContent, "\"") || strings.HasPrefix(rawStringNodeContent, "'") {
 				prefixLen = 1
-				isMultiLineExplicit = false // single quoted
+				isMultiLineExplicit = false
 			} else {
-				prefixLen = 0 // Should not happen for valid strings from grammar
+				prefixLen = 0
 			}
-
-			// Determine suffix length
 			suffixLen := 0
 			if isMultiLineExplicit && (strings.HasSuffix(rawStringNodeContent, "\"\"\"") || strings.HasSuffix(rawStringNodeContent, "'''")) {
 				suffixLen = 3
 			} else if !isMultiLineExplicit && (strings.HasSuffix(rawStringNodeContent, "\"") || strings.HasSuffix(rawStringNodeContent, "'")) {
 				suffixLen = 1
 			}
-
 			if len(rawStringNodeContent) >= prefixLen+suffixLen {
 				actualContent = rawStringNodeContent[prefixLen : len(rawStringNodeContent)-suffixLen]
 			} else {
-				actualContent = "" // Invalid string format after prefix/suffix logic
+				actualContent = ""
 			}
-
-			if !isRawString { // Unescape only if not a raw string
+			if !isRawString {
 				actualContent = unescapePythonString(actualContent)
 			}
 
 		case "javascript", "typescript":
-			// JS/TS is simpler with template literals vs regular strings
 			if nodeType == "template_string" || (strings.HasPrefix(rawStringNodeContent, "`") && strings.HasSuffix(rawStringNodeContent, "`")) {
-				isMultiLineExplicit = true          // Template literals are inherently multi-line capable
-				if len(rawStringNodeContent) >= 2 { // `content`
+				isMultiLineExplicit = true
+				if len(rawStringNodeContent) >= 2 {
 					actualContent = rawStringNodeContent[1 : len(rawStringNodeContent)-1]
 					actualContent = unescapeJSString(actualContent)
 				} else {
 					actualContent = ""
-				} // Just ``
-			} else if nodeType == "string_fragment" { // Part of a template string, content is usually raw from TS parser
-				actualContent = unescapeJSString(rawStringNodeContent) // Unescape potential escape sequences within the fragment
-			} else if (strings.HasPrefix(rawStringNodeContent, "\"") && strings.HasSuffix(rawStringNodeContent, "\"")) ||
-				(strings.HasPrefix(rawStringNodeContent, "'") && strings.HasSuffix(rawStringNodeContent, "'")) {
-				isMultiLineExplicit = false         // Explicitly single quoted form
-				if len(rawStringNodeContent) >= 2 { // "content" or 'content'
+				}
+			} else if nodeType == "string_fragment" {
+				actualContent = unescapeJSString(rawStringNodeContent)
+			} else if (strings.HasPrefix(rawStringNodeContent, "\"") && strings.HasSuffix(rawStringNodeContent, "\"")) || (strings.HasPrefix(rawStringNodeContent, "'") && strings.HasSuffix(rawStringNodeContent, "'")) {
+				isMultiLineExplicit = false
+				if len(rawStringNodeContent) >= 2 {
 					actualContent = rawStringNodeContent[1 : len(rawStringNodeContent)-1]
 					actualContent = unescapeJSString(actualContent)
 				} else {
 					actualContent = ""
-				} // Just "" or ''
+				}
 			}
-			// Fallback for isMultiLineExplicit if not set but content has newlines
 			if !isMultiLineExplicit && strings.Contains(actualContent, "\n") {
 				isMultiLineExplicit = true
 			}
@@ -271,11 +274,13 @@ func (s *Scanner) ParseTreeSitterFile(filePath string, contentBytes []byte, lang
 			IsMultiLine: isMultiLineExplicit || linesInContent > 1,
 		}
 		context := PromptContext{
-			Text:                actualContent,
-			VariableName:        varName,
-			IsMultiLineExplicit: isMultiLineExplicit,
-			LinesInContent:      linesInContent,
-			FileExtension:       ext,
+			Text:                   actualContent,
+			VariableName:           varName,
+			IsMultiLineExplicit:    isMultiLineExplicit,
+			LinesInContent:         linesInContent,
+			FileExtension:          ext,
+			InvocationFunctionName: currentInvFuncName,
+			InvocationReceiverName: currentInvReceiverName,
 		}
 
 		if s.IsPotentialPrompt(context, &fp) {
