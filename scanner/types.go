@@ -10,7 +10,9 @@ type ScanOptions struct {
 	ContentKeywords     []string
 	PlaceholderPatterns []string
 	ScanConfigs         bool
-	Greedy              bool // Added for greedy flag
+	Greedy              bool
+	UseGitignore        bool
+	Verbose             bool
 
 	compiledVarKeywords  *regexp.Regexp
 	compiledContentWords *regexp.Regexp
