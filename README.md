@@ -1,67 +1,75 @@
-# prompt-scanner 🔎
-
-**Find LLM prompts in any codebase. No more hunting for the AI’s “needle in the haystack.”**
+Here’s an **updated README.md** that matches the actual features, flags, and internal logic of your latest `prompt-scanner` codebase (as found in the attached code):
 
 ---
 
-`prompt-scanner` is a blazing-fast™, language-aware CLI tool that **automatically finds Large Language Model (LLM) prompts**—the actual natural language instructions—in codebases and config files. If you’re tired of digging through endless files and wrappers just to see what prompt your AI/LLM code is using, this tool is for you.
+# prompt-scanner 🔎
+
+**Effortlessly find LLM prompts in any codebase—no more hunting for the AI’s “needle in the haystack.”**
+
+---
+
+`prompt-scanner` is a blazing-fast™, language-aware CLI tool that **automatically surfaces natural-language prompts for LLMs**—even when they’re deeply buried in code, templates, or config files. If you’re tired of digging through endless files of a codebase, let `prompt-scanner` do the heavy lifting for you.
 
 ---
 
 ## Why Use prompt-scanner?
 
-Most modern AI wrappers and frameworks hide the real LLM prompt deep in variables, templates, or config files. Searching for them manually is tedious and error-prone. `prompt-scanner` saves you hours by **recursively scanning your project and surfacing potential prompts instantly**—no matter how buried they are.
+Modern AI codebases bury prompts in variables, templates, and configs. Manual searching is tedious and unreliable. `prompt-scanner` recursively scans your project to **instantly surface potential prompts**, regardless of where they hide.
 
 ---
 
 ## Key Features
 
-* **Comprehensive Project Scanning:** Searches through code and configuration files in multiple languages and formats (Go, Python, JavaScript/TypeScript, JSON, YAML, TOML, `.env`).
-* **Heuristic Detection:** Intelligent filters exclude irrelevant log messages and errors, identifying genuine prompts efficiently.
-* **Native Multi-language Support:** Leverages Go's AST and Tree-sitter for accurate parsing and analysis.
-* **GitHub Integration:** Directly scan GitHub repositories—simply provide the URL and `prompt-scanner` does the rest.
-* **Flexible Output:** Offers tabular or JSON-formatted outputs, with optional inclusion of file paths and line numbers.
-* **Highly Configurable:** Customize keywords, placeholder patterns, prompt length thresholds, and detection sensitivity.
-* **Performance Optimized:** Utilizes multi-threading and skips unnecessary directories (e.g., dependencies/build folders).
+* **Language-aware Scanning:** Supports Go (native AST), Python, JavaScript/TypeScript (Tree-sitter), plus config files (JSON, YAML, TOML, `.env`).
+* **Configurable Heuristics:** Fine-tune how “strict” or “greedy” detection is, set minimum string length, and customize keyword matching.
+* **GitHub Repo Scanning:** Provide a repo URL—`prompt-scanner` clones and scans it automatically.
+* **Smart Output:** Display as tabular or JSON, optionally include/exclude filepaths and line numbers.
+* **.gitignore Respect:** Optionally skip files/directories matched by `.gitignore`.
+* **Performance:** Multi-threaded, skips common non-source directories.
+* **Verbose Mode:** See detailed logs for debugging and transparency.
 
 ---
 
-## Quickstart
-
-### Installation
+## Installation
 
 ```sh
 go install github.com/alexferrari88/prompt-scanner@latest
 ```
 
-### Basic Usage
+---
+
+## Usage
 
 ```sh
-prompt-scanner ./my-project
-# or scan directly from GitHub
-prompt-scanner https://github.com/user/repo
+prompt-scanner [options] <local_path_or_github_url>
 ```
 
 ### Common Options
 
-* `--json` – Output results in JSON format.
-* `--scan-configs` – Include configuration files (JSON, YAML, TOML, `.env`).
-* `--min-len=N` – Set minimum string length to qualify as a prompt (default: 30).
-* `--var-keywords=...` – Define keywords for detecting prompt variables.
-* `--content-keywords=...` – Specify keywords that must be present in the content.
-* `--greedy` – Enable aggressive detection heuristics.
+* `--json` — Output in JSON format
+* `--scan-configs` — Also scan config files (JSON, YAML, TOML, `.env`)
+* `--min-len=N` — Minimum prompt string length (default: 30)
+* `--var-keywords=...` — Comma-separated variable/key names for prompt detection
+* `--content-keywords=...` — Comma-separated keywords to match in content
+* `--placeholder-patterns=...` — Comma-separated regexes to detect template placeholders
+* `--greedy` — Use more aggressive detection (catches more, more noise)
+* `--no-filepath` — Omit filepaths in output
+* `--no-linenumber` — Omit line numbers in output
+* `--use-gitignore` — Respect `.gitignore` (skip matching files/dirs)
+* `--verbose` — Print verbose log output to stderr
 
-#### Example
+### Example
 
 ```sh
 prompt-scanner --json --scan-configs --greedy ./llm-project
+prompt-scanner --scan-configs --use-gitignore --min-len=50 https://github.com/user/repo
 ```
 
 ---
 
 ## Sample Output
 
-### Standard View
+**Text Output**
 
 ```
 scanner/ai.go:41   You are an expert coding assistant. Your task is to help users...
@@ -69,7 +77,7 @@ handlers/llm.py:11 Your task is to summarize the following article for a 12-year
 config/prompts.yaml:3 Act as a wise, unbiased career coach. Answer the following...
 ```
 
-### JSON View
+**JSON Output**
 
 ```json
 [
@@ -85,57 +93,63 @@ config/prompts.yaml:3 Act as a wise, unbiased career coach. Answer the following
 
 ## Advanced Usage
 
-* **Include Config Files:**
+* **Scan config files only:**
 
   ```sh
-  prompt-scanner --scan-configs ./my-project
+  prompt-scanner --scan-configs ./project
   ```
-
-* **Direct Scanning From a Github URL:**
+* **Scan GitHub repo:**
 
   ```sh
   prompt-scanner https://github.com/user/repo
   ```
-
-* **Customize Output:**
-
-  ```sh
-  prompt-scanner --no-filepath --no-linenumber ./my-project
-  ```
-
-* **Adjust Detection Heuristics:**
+* **Customize detection:**
 
   ```sh
-  prompt-scanner --var-keywords=prompt,message --content-keywords=task,instruct ./my-project
+  prompt-scanner --var-keywords=prompt,system_message --content-keywords="act as,your task is" ./project
   ```
+* **Omit file paths and line numbers:**
 
-### View All Options
+  ```sh
+  prompt-scanner --no-filepath --no-linenumber ./project
+  ```
+* **Respect `.gitignore`:**
 
-```sh
-prompt-scanner --help
-```
+  ```sh
+  prompt-scanner --use-gitignore ./project
+  ```
+* **Full flag list:**
+
+  ```sh
+  prompt-scanner --help
+  ```
 
 ---
 
 ## How It Works
 
-* **Intelligent Parsing:** Utilizes Go's AST and Tree-sitter for precise, language-aware analysis.
-* **Variable Detection:** Targets typical prompt-related variables like `prompt`, `template`, and more.
-* **Smart Filtering:** Avoids false positives by excluding common non-prompt strings unless in greedy mode.
-* **Supports Complex Prompts:** Handles multi-line strings and templated content effectively.
+* **Go code:** Uses the Go AST for reliable string literal extraction and context.
+* **Python/JS/TS:** Uses Tree-sitter queries for robust parsing and prompt context.
+* **Config files:** JSON, YAML, TOML, `.env` handled with special parsers.
+* **Heuristics:**
+
+  * By default, only detects strings that *start with* or *contain* key prompt-like phrases and are multi-line/long enough.
+  * With `--greedy`, detection is more permissive but may catch more false positives.
+  * Variables/keys, content, and placeholder regexes are all tunable.
+* **Ignores:** Skips common “junk” directories (`.git`, `node_modules`, etc.), plus `.gitignore` (if enabled).
 
 ---
 
 ## Contributing 🤝
 
-Pull requests and community contributions are welcome. If you'd like support for additional languages or configurations, please open an issue or submit a pull request with the required changes.
+Pull requests welcome! For new language support, better heuristics, or improvements, open an issue or PR.
 
 ---
 
 ## Support Development 💖
 
-If `prompt-scanner` saves you time or headaches, please consider [sponsoring me on GitHub](https://github.com/sponsors/alexferrari88)!
-Your support helps me maintain and improve this project.
+If `prompt-scanner` saves you time or headaches, [sponsor me on GitHub](https://github.com/sponsors/alexferrari88)!
+Your support keeps this project (and me) going.
 
 [![Sponsor me](https://img.shields.io/badge/Sponsor%20me%20%E2%9D%A4%EF%B8%8F-GitHub-blue?style=for-the-badge)](https://github.com/sponsors/alexferrari88)
 
@@ -143,7 +157,7 @@ Your support helps me maintain and improve this project.
 
 ## License 📄
 
-This project is licensed under the [MIT License](LICENSE).
+MIT License. See [LICENSE](LICENSE).
 
 ---
 
