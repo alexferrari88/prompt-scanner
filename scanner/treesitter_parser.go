@@ -346,6 +346,15 @@ func (s *Scanner) ParseTreeSitterFile(filePath string, contentBytes []byte, lang
 			continue
 		}
 
+		// If this node is a string_fragment and its parent is a template_string,
+		// skip it because the entire template_string will be processed.
+		if stringNode.Type() == "string_fragment" {
+			parentNode := stringNode.Parent()
+			if parentNode != nil && parentNode.Type() == "template_string" {
+				continue
+			}
+		}
+
 		if processedNodeIDs[stringNode.ID()] {
 			continue
 		}
@@ -466,6 +475,9 @@ func (s *Scanner) ParseTreeSitterFile(filePath string, contentBytes []byte, lang
 				}
 				actualContent = unescapeJSString(actualContent)
 			} else if nodeType == "string_fragment" {
+				// This case should now only be hit if the string_fragment is NOT part of a template_string
+				// (e.g. if the query or grammar changes to allow standalone fragments).
+				// For the current setup, the check at the beginning of the loop body handles fragments within template_strings.
 				actualContent = unescapeJSString(rawStringNodeContent)
 				if strings.Contains(rawStringNodeContent, "\n") {
 					isMultiLineExplicit = true
